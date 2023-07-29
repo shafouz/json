@@ -1,11 +1,12 @@
 const Token = @import("main.zig").Token;
+const TokenT = @import("main.zig").TokenT;
 const std = @import("std");
 const print = std.debug.print;
 const testing = std.testing;
 const ArrayList = std.ArrayList;
 
-pub fn lexer(token_stream: []const u8) ArrayList(Token) {
-    var tokens = ArrayList(Token).init(std.heap.page_allocator);
+pub fn lexer(token_stream: []const u8) ArrayList(TokenT) {
+    var tokens = ArrayList(TokenT).init(std.heap.page_allocator);
 
     const ts_len = token_stream.len;
     var local_index: usize = 0;
@@ -14,8 +15,9 @@ pub fn lexer(token_stream: []const u8) ArrayList(Token) {
             continue;
         }
 
+        const char = token_stream[local_index];
         const token =
-            switch (token_stream[local_index]) {
+            switch (char) {
             '}' => Token.R_CURLY,
             '{' => Token.L_CURLY,
             ']' => Token.R_SQUARE,
@@ -23,7 +25,7 @@ pub fn lexer(token_stream: []const u8) ArrayList(Token) {
             ',' => Token.COMMA,
             ':' => Token.COLON,
             '"' => Token.D_QUOTE,
-            else => Token.LITERAL,
+            else => TokenT{ .LITERAL = char },
         };
 
         tokens.append(token) catch @panic("oom");
@@ -62,7 +64,7 @@ test "skips whitespaces newline multiple" {
 }
 
 test "skips whitespaces tabs" {
-    const json = "sd\t";
+    const json = "[sd\t]";
 
     const tokens = lexer(json);
     if (tokens.items.len == json.len) {
