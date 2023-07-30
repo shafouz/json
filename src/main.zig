@@ -25,16 +25,16 @@ pub fn parser(token_stream: *TokenStream) !void {
 
 pub const Token = enum { R_CURLY, L_CURLY, R_SQUARE, L_SQUARE, LITERAL, COMMA, COLON, D_QUOTE, NULL, EOF };
 pub const TokenT = union(Token) { R_CURLY, L_CURLY, R_SQUARE, L_SQUARE, LITERAL: u8, COMMA, COLON, D_QUOTE, NULL, EOF };
-const ParserError = error{ MISSING_COMMA, INVALID_OBJECT, INVALID_KEY_NO_D_QUOTE, INVALID_VALUE, NO_L_SQUARE, NO_R_SQUARE, NO_L_CURLY, NO_R_CURLY, NO_R_D_QUOTE, NO_L_D_QUOTE, INVALID_KEY, DEBUG, EOF_REACHED, INVALID_KV_PAIR, OutOfMemory, MISSING_COLON, INVALID_ARRAY, TRYING_TO_UNDERREAD, TRYING_TO_OVERREAD, InvalidCharacter };
-const Array = struct { items: ?ArrayList(*ValueT) };
+const ParserError = error{ MISSING_COMMA, INVALID_OBJECT, INVALID_KEY_NO_D_QUOTE, INVALID_VALUE, NO_L_SQUARE, NO_R_SQUARE, NO_L_CURLY, NO_R_CURLY, NO_R_D_QUOTE, NO_L_D_QUOTE, INVALID_KEY, DEBUG, EOF_REACHED, INVALID_KV_PAIR, MISSING_COLON, INVALID_ARRAY, TRYING_TO_UNDERREAD, TRYING_TO_OVERREAD, InvalidCharacter, OutOfMemory };
+const Array = struct { elements: ?ArrayList(*ValueT) };
 const Bool = struct { val: bool, start: usize, end: usize };
 const String = struct { val: []const u8, start: usize, end: usize };
 const Number = struct { val: i32, start: usize, end: usize };
 const Null = struct { start: usize, end: usize };
-const KV_Pair = struct { key: String, value: *ValueT };
-const Object = struct { kv_pairs: ?ArrayList(KV_Pair) };
-const Value = enum { Array, String, Bool, Null, Number, KV_Pair, Object };
-const ValueT = union(Value) { Array: Array, String: String, Bool: Bool, Null: Null, Number: Number, KV_Pair: KV_Pair, Object: Object };
+const Member = struct { key: String, value: *ValueT };
+const Object = struct { members: ?ArrayList(Member) };
+const Value = enum { Array, String, Bool, Null, Number, Member, Object };
+const ValueT = union(Value) { Array: Array, String: String, Bool: Bool, Null: Null, Number: Number, Member: Member, Object: Object };
 
 pub const TokenStream = struct {
     src: []const u8,
@@ -61,13 +61,12 @@ pub const TokenStream = struct {
             .Object => {
                 str.append("{") catch {};
                 defer str.append("}") catch {};
-                const kv_pairs = val.Object.kv_pairs;
+                const members = val.Object.members;
 
-                if (kv_pairs != null) {
-                    var length = val.Object.kv_pairs.?.items.len - 1;
-                    for (kv_pairs.?.items) |kv| {
-                        // recursive_draw(str, &ValueT{ .KV_Pair = kv }) catch {};
-                        recursive_draw(str, &ValueT{ .KV_Pair = kv }) catch {};
+                if (members != null) {
+                    var length = val.Object.members.?.items.len - 1;
+                    for (members.?.items) |kv| {
+                        recursive_draw(str, &ValueT{ .Member = kv }) catch {};
 
                         if (length > 0) {
                             str.append(",") catch {};
@@ -79,11 +78,11 @@ pub const TokenStream = struct {
             .Array => {
                 str.append("[") catch {};
                 defer str.append("]") catch {};
-                const items = val.Array.items;
+                const elements = val.Array.elements;
 
-                if (items != null) {
-                    var length = val.Array.items.?.items.len - 1;
-                    for (items.?.items) |item| {
+                if (elements != null) {
+                    var length = val.Array.elements.?.items.len - 1;
+                    for (elements.?.items) |item| {
                         recursive_draw(str, item) catch {};
 
                         if (length > 0) {
@@ -93,11 +92,11 @@ pub const TokenStream = struct {
                     }
                 }
             },
-            .KV_Pair => {
-                const key = val.KV_Pair.key.val;
+            .Member => {
+                const key = val.Member.key.val;
                 try str.append(key);
                 try str.append(":");
-                const _val = val.KV_Pair.value;
+                const _val = val.Member.value;
                 try recursive_draw(str, _val);
             },
             .String => {
@@ -144,17 +143,17 @@ pub const TokenStream = struct {
         if (self.current() == .R_CURLY) {
             // takes } if its done
             _ = try self.next();
-            return ValueT{ .Object = Object{ .kv_pairs = null } };
+            return ValueT{ .Object = Object{ .members = null } };
         }
 
-        var kv_pairs = ArrayList(KV_Pair).init(alloc);
+        var members = ArrayList(Member).init(alloc);
 
         // {X
         //  ^
         var kv = try self.kv_pair();
-        try kv_pairs.append(kv);
+        try members.append(kv);
 
-        // should stop generating kv_pairs if has reached '}'
+        // should stop generating members if has reached '}'
         // if reached .EOF is an error
         while (self.current() != .EOF) : (_ = try self.next()) {
             switch (self.current()) {
@@ -165,7 +164,7 @@ pub const TokenStream = struct {
                 .COMMA => {
                     _ = try self.next();
                     var kv1 = try self.kv_pair();
-                    try kv_pairs.append(kv1);
+                    try members.append(kv1);
                     _ = try self.prev();
                 },
                 else => return ParserError.MISSING_COMMA,
@@ -174,7 +173,7 @@ pub const TokenStream = struct {
             return ParserError.EOF_REACHED;
         }
 
-        return ValueT{ .Object = Object{ .kv_pairs = kv_pairs } };
+        return ValueT{ .Object = Object{ .members = members } };
     }
 
     fn _null(self: *TokenStream) !Null {
@@ -298,7 +297,7 @@ pub const TokenStream = struct {
         return self.get_last_value();
     }
 
-    fn kv_pair(self: *TokenStream) ParserError!KV_Pair {
+    fn kv_pair(self: *TokenStream) ParserError!Member {
         switch (self.current()) {
             .D_QUOTE => {
                 const key = try self.string();
@@ -308,7 +307,7 @@ pub const TokenStream = struct {
                 _ = try self.next();
 
                 const val = try self.value();
-                return KV_Pair{ .key = key, .value = val };
+                return Member{ .key = key, .value = val };
             },
             else => return ParserError.INVALID_KEY,
         }
@@ -344,15 +343,15 @@ pub const TokenStream = struct {
         if (self.current() == .R_SQUARE) {
             // takes ] if its done
             _ = try self.next();
-            return ValueT{ .Array = Array{ .items = null } };
+            return ValueT{ .Array = Array{ .elements = null } };
         }
 
-        var items = ArrayList(*ValueT).init(alloc);
+        var elements = ArrayList(*ValueT).init(alloc);
 
         // [X
         //  ^
         var val = try self.value();
-        try items.append(val);
+        try elements.append(val);
 
         while (self.current() != .EOF) : (_ = try self.next()) {
             switch (self.current()) {
@@ -363,7 +362,7 @@ pub const TokenStream = struct {
                 .COMMA => {
                     _ = try self.next();
                     var val1 = try self.value();
-                    try items.append(val1);
+                    try elements.append(val1);
 
                     // ]]
                     //  ^
@@ -381,7 +380,7 @@ pub const TokenStream = struct {
             return ParserError.EOF_REACHED;
         }
 
-        return ValueT{ .Array = Array{ .items = items } };
+        return ValueT{ .Array = Array{ .elements = elements } };
     }
 
     fn get_string(self: *TokenStream, str: String) []const u8 {
@@ -393,10 +392,10 @@ pub const TokenStream = struct {
             return error.EXPECTED_OBJECT;
         }
 
-        const kv_pairs = obj.Object.kv_pairs.?.items;
-        var keys = try alloc.alloc(String, kv_pairs.len);
+        const members = obj.Object.members.?.items;
+        var keys = try alloc.alloc(String, members.len);
 
-        for (kv_pairs, 0..) |kv, i| {
+        for (members, 0..) |kv, i| {
             keys[i] = kv.key;
         }
         return keys;
@@ -563,7 +562,7 @@ test "object empty" {
     var token_stream = TokenStream.init(json, tokens);
     var obj = try token_stream.object();
 
-    if (obj.Object.kv_pairs != null) {
+    if (obj.Object.members != null) {
         return error.OBJECT_SHOULD_BE_EMPTY;
     }
 }
@@ -578,8 +577,8 @@ test "object single string value happy path" {
     const obj = try token_stream.object();
 
     assert(obj == .Object);
-    assert(obj.Object.kv_pairs.?.items.len == 1);
-    assert(obj.Object.kv_pairs.?.items[0].value.* == .String);
+    assert(obj.Object.members.?.items.len == 1);
+    assert(obj.Object.members.?.items[0].value.* == .String);
 }
 
 test "object multiple string value happy path" {
@@ -592,9 +591,9 @@ test "object multiple string value happy path" {
     const obj = try token_stream.object();
 
     assert(obj == .Object);
-    assert(obj.Object.kv_pairs.?.items.len == 2);
-    assert(obj.Object.kv_pairs.?.items[0].value.* == .String);
-    assert(obj.Object.kv_pairs.?.items[1].value.* == .String);
+    assert(obj.Object.members.?.items.len == 2);
+    assert(obj.Object.members.?.items[0].value.* == .String);
+    assert(obj.Object.members.?.items[1].value.* == .String);
 }
 
 test "object nested once" {
@@ -606,11 +605,11 @@ test "object nested once" {
     var token_stream = TokenStream.init(json, tokens);
     const obj = try token_stream.object();
     assert(obj == .Object);
-    const obj1 = obj.Object.kv_pairs.?;
+    const obj1 = obj.Object.members.?;
     assert(obj1.items.len == 1);
     assert(@TypeOf(obj1.items[0].key) == String);
     assert(obj1.items[0].value.* == .Object);
-    assert(obj1.items[0].value.Object.kv_pairs == null);
+    assert(obj1.items[0].value.Object.members == null);
 }
 
 test "object nested n times" {
@@ -621,7 +620,7 @@ test "object nested n times" {
     const tokens = lexer(json);
     var token_stream = TokenStream.init(json, tokens);
     const obj = try token_stream.object();
-    assert(obj.Object.kv_pairs.?.items.len == 4);
+    assert(obj.Object.members.?.items.len == 4);
 }
 
 test "object invalid" {
@@ -671,7 +670,7 @@ test "array empty" {
     var token_stream = TokenStream.init(json, tokens);
     var arr = try token_stream.array();
 
-    if (arr.Array.items != null) {
+    if (arr.Array.elements != null) {
         return error.ARRAY_SHOULD_BE_EMPTY;
     }
 }
@@ -686,8 +685,8 @@ test "array single string value happy path" {
     const arr = try token_stream.array();
 
     assert(arr == .Array);
-    assert(arr.Array.items.?.items.len == 1);
-    assert(arr.Array.items.?.items[0].* == .String);
+    assert(arr.Array.elements.?.items.len == 1);
+    assert(arr.Array.elements.?.items[0].* == .String);
 }
 
 test "array multiple string value happy path" {
@@ -700,9 +699,9 @@ test "array multiple string value happy path" {
     const arr = try token_stream.array();
 
     assert(arr == .Array);
-    assert(arr.Array.items.?.items.len == 2);
-    assert(arr.Array.items.?.items[0].* == .String);
-    assert(arr.Array.items.?.items[1].* == .String);
+    assert(arr.Array.elements.?.items.len == 2);
+    assert(arr.Array.elements.?.items[0].* == .String);
+    assert(arr.Array.elements.?.items[1].* == .String);
 }
 
 test "array nested once" {
@@ -715,12 +714,12 @@ test "array nested once" {
     const arr = try token_stream.array();
 
     assert(arr == .Array);
-    const arr1 = arr.Array.items.?;
+    const arr1 = arr.Array.elements.?;
 
     assert(arr1.items.len == 1);
     assert(arr1.items[0].* == .Array);
     assert(arr1.items[0].* == .Array);
-    assert(arr1.items[0].Array.items == null);
+    assert(arr1.items[0].Array.elements == null);
 }
 
 test "array leading comma" {
@@ -765,8 +764,8 @@ test "array nested n times" {
     const tokens = lexer(json);
     var token_stream = TokenStream.init(json, tokens);
     const arr = try token_stream.array();
-    assert(arr.Array.items.?.items.len == 2);
-    for (arr.Array.items.?.items) |item| {
+    assert(arr.Array.elements.?.items.len == 2);
+    for (arr.Array.elements.?.items) |item| {
         assert(item.* == .Array);
     }
 }
